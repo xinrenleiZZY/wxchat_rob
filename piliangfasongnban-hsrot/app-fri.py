@@ -43,15 +43,31 @@ class WeChatAuto:
         self.opencv_available = importlib.util.find_spec("cv2") is not None
             
     def create_template_dir(self):
-        """创建模板图片目录"""
+        """创建模板图片目录，包括深色模式(dark)和浅色模式(light)子目录"""
         if not os.path.exists(self.template_path):
             os.makedirs(self.template_path)
-            print(f"已创建模板目录: {self.template_path}")
-            print("请将截取的微信界面元素图片放入此目录")
+            print(f"已创建模板主目录: {self.template_path}")
             
-    def take_screenshot(self, region_name, region=None):
+            # 创建浅色模式子目录(light)
+            light_mode_path = os.path.join(self.template_path, "light")
+            os.makedirs(light_mode_path)
+            print(f"已创建浅色模式目录: {light_mode_path}")
+            
+            # 创建深色模式子目录(dark)
+            dark_mode_path = os.path.join(self.template_path, "dark")
+            os.makedirs(dark_mode_path)
+            print(f"已创建深色模式目录: {dark_mode_path}")
+            
+            print("请将浅色模式界面元素图片放入light子目录，深色模式放入dark子目录")
+            
+    def take_screenshot(self, region_name, region=None, is_dark_mode=False):
         """截取指定区域的屏幕截图，用于制作模板"""
         try:
+            # 根据模式选择子目录
+            mode_dir = "dark" if is_dark_mode else "light"
+            full_template_path = os.path.join(self.template_path, mode_dir)
+            os.makedirs(full_template_path, exist_ok=True)  # 确保目录存在
+
             if region:
                 # 确保区域有效
                 screen_width, screen_height = pyautogui.size()
@@ -64,7 +80,8 @@ class WeChatAuto:
             else:
                 screenshot = pyautogui.screenshot()
                 
-            filename = f"{self.template_path}/{region_name}.png"
+            # 修正保存路径：存入对应模式的子目录（light/dark）
+            filename = os.path.join(full_template_path, f"{region_name}.png")
             screenshot.save(filename)
             print(f"已保存截图: {filename}")
             return filename
@@ -73,13 +90,19 @@ class WeChatAuto:
             return None
     
     def locate_element(self, template_name, confidence=0.8, retry_times=3, grayscale=True):
-        """使用图像识别定位元素，增加兼容性处理"""
-        template_file = f"{self.template_path}/{template_name}.png"
+        """使用图像识别定位元素，增加兼容性处理，同时尝试浅色和深色模式模板"""
+        # template_file = f"{self.template_path}/{template_name}.png"
+        modes = ["light", "dark"]
+        template_files = [
+            os.path.join(self.template_path, mode, f"{template_name}.png") 
+            for mode in modes
+        ]
         
-        if not os.path.exists(template_file):
-            print(f"模板文件不存在: {template_file}")
+        # 过滤不存在的模板文件
+        valid_templates = [f for f in template_files if os.path.exists(f)]
+        if not valid_templates:
+            print(f"模板文件不存在: {template_files}")
             return None
-            
         # 根据OpenCV是否安装调整参数
         kwargs = {"grayscale": grayscale}
         if self.opencv_available:
@@ -87,27 +110,33 @@ class WeChatAuto:
             
         for i in range(retry_times):
             try:
-                # 先尝试定位全屏
-                element_location = pyautogui.locateOnScreen(template_file, **kwargs)
+                # 先尝试全屏定位（遍历所有可用模板）
+                element_location = None
+                for template_file in valid_templates:
+                    element_location = pyautogui.locateOnScreen(template_file, **kwargs)
+                    if element_location:
+                        mode_used = "深色" if "dark" in template_file else "浅色"
+                        print(f"✓ 成功定位 {template_name}（{mode_used}模式）")
+                        return element_location
                 
                 # 如果全屏没找到，尝试只在微信窗口内搜索
-                if not element_location:
-                    wechat_windows = gw.getWindowsWithTitle('微信')
-                    if wechat_windows:
-                        wechat_win = wechat_windows[0]
-                        region = (wechat_win.left, wechat_win.top, 
-                                 wechat_win.width, wechat_win.height)
+                wechat_windows = gw.getWindowsWithTitle('微信')
+                if wechat_windows:
+                    wechat_win = wechat_windows[0]
+                    region = (wechat_win.left, wechat_win.top, 
+                            wechat_win.width, wechat_win.height)
+                    for template_file in valid_templates:
                         element_location = pyautogui.locateOnScreen(
                             template_file, 
                             region=region,** kwargs
                         )
-                
-                if element_location:
-                    print(f"✓ 成功定位 {template_name}")
-                    return element_location
-                else:
-                    print(f"第 {i+1} 次尝试定位 {template_name} 失败")
-                    time.sleep(1)
+                        if element_location:
+                            mode_used = "深色" if "dark" in template_file else "浅色"
+                            print(f"✓ 成功定位 {template_name}（{mode_used}模式）")
+                            return element_location
+            
+                print(f"第 {i+1} 次尝试定位 {template_name} 失败")
+                time.sleep(1)
             except Exception as e:
                 print(f"定位 {template_name} 时出错: {e}")
                 time.sleep(1)
@@ -288,11 +317,13 @@ class WeChatAuto:
         return True
     
     def create_templates(self):
-        """辅助函数：创建模板图片，增加指导信息"""
+        """辅助函数：创建模板图片，同时支持浅色和深色模式"""
         print("\n=== 微信界面元素模板创建向导 ===")
         print("请按照提示操作，确保微信窗口可见且未被遮挡")
         print("将鼠标移动到目标位置中央，然后按回车")
         
+        # 先创建浅色模式模板
+        print("\n===== 请确保微信处于浅色模式 =====")
         input("1. 将鼠标移动到【搜索图标】上（通常在微信窗口顶部），按回车...")
         pos = pyautogui.position()
         search_region = (pos[0]-20, pos[1]-20, 40, 40)
@@ -307,6 +338,23 @@ class WeChatAuto:
         pos = pyautogui.position()
         send_region = (pos[0]-20, pos[1]-20, 40, 40)
         self.take_screenshot("send_button", send_region)
+        
+        # 再创建深色模式模板
+        print("\n===== 请切换微信到深色模式 =====")
+        input("1. 将鼠标移动到【搜索图标】上（通常在微信窗口顶部），按回车...")
+        pos = pyautogui.position()
+        search_region = (pos[0]-20, pos[1]-20, 40, 40)
+        self.take_screenshot("search_icon", search_region, is_dark_mode=True)
+        
+        input("2. 将鼠标移动到【消息输入框】内（底部输入区域），按回车...")
+        pos = pyautogui.position()
+        input_region = (pos[0]-50, pos[1]-15, 100, 30)  # 更大的区域，提高识别率
+        self.take_screenshot("message_input", input_region, is_dark_mode=True)
+        
+        input("3. 将鼠标移动到【发送按钮】上（输入框旁边），按回车...")
+        pos = pyautogui.position()
+        send_region = (pos[0]-20, pos[1]-20, 40, 40)
+        self.take_screenshot("send_button", send_region, is_dark_mode=True)
         
         print("\n✓ 模板创建完成！现在可以运行自动化了。")
         print("如果后续识别失败，请重新运行此向导更新模板\n")
@@ -395,15 +443,20 @@ def read_friend_list(file_path="friends.txt"):
 def main():
     try:
         wechat = WeChatAuto()
-        
-        # 检查必要的模板文件
+
+        # 检查必要的模板文件（同时检查浅色和深色模式）
         required_templates = ["search_icon.png", "message_input.png", "send_button.png"]
-        existing_templates = []
+        modes = ["light", "dark"]
+        missing_templates = []
         
-        if os.path.exists(wechat.template_path):
-            existing_templates = os.listdir(wechat.template_path)
-            
-        missing_templates = [t for t in required_templates if t not in existing_templates]
+        for mode in modes:
+            mode_path = os.path.join(wechat.template_path, mode)
+            if os.path.exists(mode_path):
+                existing = os.listdir(mode_path)
+            else:
+                existing = []
+            missing = [f"{mode}/{t}" for t in required_templates if t not in existing]
+            missing_templates.extend(missing)
         
         # 如果缺少模板，创建模板
         if missing_templates:
@@ -426,7 +479,6 @@ def main():
             else:
                 print("程序退出")
                 return
-        # target_friend = "仙尊"  # 修改为你要发送的好友名称
 
         # 发送消息
         message = f"这是一条通过图像识别自动发送的消息\n时间：{time.strftime('%Y-%m-%d %H:%M:%S')}"
